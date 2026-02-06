@@ -1,32 +1,67 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import mongoose from "mongoose";
 import { Worker } from "bullmq";
 import { redisConnection } from "../config/redis.js";
 import { handleIncomingMessage } from "./message/handler.js";
 
-console.log("👷 Worker booting. PID:", process.pid);
+async function startWorker() {
+  console.log("👷 Worker starting...");
 
-// 🔒 HARD SAFETY: module-scope guard (NOT global)
-let workerStarted = false;
-if (workerStarted) {
-  console.warn("⚠️ Worker already started, exiting");
-  process.exit(0);
-}
-workerStarted = true;
-
-new Worker(
-  "message-queue",
-  async job => {
-    console.log("👷 Worker got job:", job.data);
-    await handleIncomingMessage(job.data);
-  },
-  {
-    connection: redisConnection,
-    concurrency: 1,
-    lockDuration: 30000
+  /* 🔒 CONNECT MONGODB FIRST */
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000
+    });
+    console.log("✅ MongoDB connected (worker)");
+  } catch (err) {
+    console.error("❌ MongoDB connection failed (worker)", err);
+    process.exit(1); 
   }
-);
+
+  console.log("👷 Worker booted. PID:", process.pid);
+
+  /* 🚀 START WORKER */
+  const worker = new Worker(
+    "message-queue",
+    async (job) => {
+      try {
+        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log(`📥 Processing Job ID: ${job.id}`);
+        
+        // Yahan handleIncomingMessage ka poora wait hona zaroori hai
+        await handleIncomingMessage(job);
+        
+        console.log(`✅ Job Completed: ${job.id}`);
+      } catch (err) {
+        // Agar yahan error catch nahi hoga, toh BullMQ ise baar-baar retry karega
+        console.error(`❌ Job Failed: ${job.id} | Error: ${err.message}`);
+        
+        // Error throw karne se BullMQ ko pata chalta hai ki job fail hua hai
+        // Agar retry nahi chahiye toh bas console.error karke chhor dein
+        throw err; 
+      }
+    },
+    {
+      connection: redisConnection,
+      concurrency: 1, // Ek baar mein ek hi message process hoga
+      lockDuration: 180000, // 3 minutes
+      lockRenewTime: 30000,
+    }
+  );
+
+  // Worker events for better debugging
+  worker.on('completed', (job) => {
+    console.log(`🏁 Worker finished job ${job.id}`);
+  });
+
+  worker.on('failed', (job, err) => {
+    console.log(`⚠️ Worker failed job ${job?.id}: ${err.message}`);
+  });
+}
+
+startWorker();
 
 /*
 

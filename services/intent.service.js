@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 
 /* =========================
-   🔍 ENV DEBUG LOGS
+   🔍 ENV CHECK
 ========================= */
 console.log("🔍 [IntentService] ENV CHECK");
 console.log(
@@ -12,7 +12,7 @@ console.log(
 );
 
 /* =========================
-   🤖 OpenAI Client Init
+   🤖 OpenAI Client
 ========================= */
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -26,7 +26,20 @@ console.log("🤖 [IntentService] OpenAI client initialized");
 export async function detectIntent({ context, userMessage }) {
   console.log("🧠 [IntentService] detectIntent called");
   console.log("➡️ User message:", userMessage);
-  console.log("➡️ Context:", context);
+
+  /* -------------------------------------------------
+     🔒 VERY IMPORTANT
+     OpenAI NEVER accepts object in message.content
+  -------------------------------------------------- */
+  const contextString = `
+BUSINESS:
+${JSON.stringify(context?.business || {}, null, 2)}
+
+CATEGORY:
+${JSON.stringify(context?.category || {}, null, 2)}
+`;
+
+  console.log("🧪 ContextString type:", typeof contextString); // must be "string"
 
   try {
     const completion = await openai.chat.completions.create({
@@ -103,30 +116,27 @@ JSON FORMAT (STRICT):
         },
         {
           role: "system",
-          content: context
+          content: contextString   // ✅ STRING ONLY
         },
         {
           role: "user",
-          content: userMessage
+          content: String(userMessage) // ✅ STRING ONLY
         }
       ]
     });
 
-    console.log("✅ [IntentService] OpenAI raw response received");
+    const raw = completion.choices[0]?.message?.content;
+    console.log("📦 Raw model output:", raw);
 
-    const rawContent = completion.choices[0].message.content;
-    console.log("📦 Raw model output:", rawContent);
-
-    const parsed = JSON.parse(rawContent);
-
-    console.log("✅ [IntentService] Parsed intent result:", parsed);
+    const parsed = JSON.parse(raw);
+    console.log("✅ Parsed intent result:", parsed);
 
     return parsed;
   } catch (error) {
     console.error("❌ [IntentService] ERROR while detecting intent");
-    console.error(error);
+    console.error(error.message);
 
-    // 🔒 Safe fallback
+    // 🔒 SAFE FALLBACK (never throw from here)
     return {
       intent: "unknown",
       confidence: 0,

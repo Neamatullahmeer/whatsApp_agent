@@ -2,7 +2,6 @@ import crypto from "crypto";
 import { messageQueue } from "../queue/message.queue.js";
 import { isAllowed } from "../services/rateLimiter.service.js";
 import { sendTextMessage } from "../services/whatsapp.service.js";
-import { isDuplicateMessage } from "../services/messageDedup.service.js";
 
 /**
  * ✅ Webhook verification (GET)
@@ -23,10 +22,15 @@ export const verifyWebhook = (req, res) => {
 
 /**
  * ✅ Handle incoming WhatsApp messages (POST)
- * GUARANTEES:
- * - Exactly-once queue push
- * - WhatsApp retry safe
- * - Queue dedup safe
+ *
+ * ROLE:
+ * - Receive WhatsApp webhook
+ * - Normalize message
+ * - Rate limit
+ * - Push to queue (idempotent via jobId)
+ *
+ * ❗ NO business logic
+ * ❗ NO dedup DB writes
  */
 export const handleWebhook = async (req, res) => {
   try {
@@ -40,7 +44,6 @@ export const handleWebhook = async (req, res) => {
 
     const phoneNumberId = value.metadata?.phone_number_id;
 
-    // 🔁 WhatsApp may send multiple messages in one webhook
     for (const msg of value.messages) {
       // ❌ Ignore non-text / self messages
       if (msg.from_me || msg.type !== "text") continue;
@@ -51,9 +54,7 @@ export const handleWebhook = async (req, res) => {
       const from = msg.from;
 
       /**
-       * 🔑 SINGLE SOURCE OF TRUTH MESSAGE ID
-       * WhatsApp msg.id is globally unique
-       * Fallback only if missing
+       * 🔑 Message ID (WhatsApp-first, fallback safe)
        */
       const messageId =
         msg.id ||
@@ -61,14 +62,6 @@ export const handleWebhook = async (req, res) => {
           .createHash("sha1")
           .update(`${phoneNumberId}|${from}|${msgBody}`)
           .digest("hex");
-
-      /**
-       * 🔒 Webhook-level dedup (WhatsApp retries)
-       */
-      if (await isDuplicateMessage(messageId)) {
-        console.log("♻️ Duplicate webhook ignored:", messageId);
-        continue;
-      }
 
       /**
        * 🔒 Rate limit (per user)
@@ -82,7 +75,8 @@ export const handleWebhook = async (req, res) => {
       }
 
       /**
-       * 📥 Queue push (queue-level dedup via jobId)
+       * 📥 Queue push
+       * 🔐 BullMQ dedup via jobId
        */
       await messageQueue.add(
         "incoming-message",
@@ -93,7 +87,7 @@ export const handleWebhook = async (req, res) => {
           messageId
         },
         {
-          jobId: messageId,        // 🔥 SAME ID = NO DUPLICATES
+          jobId: messageId, // 🔥 SAME ID → SAME JOB (NO DUPES)
           removeOnComplete: true
         }
       );
@@ -101,10 +95,10 @@ export const handleWebhook = async (req, res) => {
       console.log("📥 Job queued:", messageId);
     }
 
-    // ✅ IMPORTANT: respond 200 immediately
+    // ✅ Always 200 (WhatsApp retry safe)
     return res.sendStatus(200);
   } catch (err) {
     console.error("❌ Webhook error:", err);
-    return res.sendStatus(200); // still 200 to stop WhatsApp retries
+    return res.sendStatus(200);
   }
 };

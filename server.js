@@ -1,5 +1,5 @@
-import dotenv from "dotenv";
-dotenv.config();
+/*import dotenv from "dotenv";
+dotenv.config();*/
 
 console.log("🚀 ENTRY ENV CHECK:", {
   OPENAI: !!process.env.OPENAI_API_KEY,
@@ -9,7 +9,7 @@ console.log("🚀 ENTRY ENV CHECK:", {
 import app from "./app.js";
 import connectDB from "./shared/db.js";
 import test from "./test.js";
-import "./workers/message.worker.js";
+//import "./workers/message.worker.js";
 
 const PORT = process.env.PORT || 3000;
 
