@@ -23,33 +23,52 @@ console.log("🤖 [IntentService] OpenAI client initialized");
 /* =========================
    🧠 Intent Detection
 ========================= */
-export async function detectIntent({ context, userMessage }) {
+// 👇 UPDATE: Added 'history' parameter
+export async function detectIntent({ context, userMessage, history }) {
   console.log("🧠 [IntentService] detectIntent called");
   console.log("➡️ User message:", userMessage);
 
   /* -------------------------------------------------
-     🔒 VERY IMPORTANT
-     OpenAI NEVER accepts object in message.content
+     🔒 Context String (Business Data)
   -------------------------------------------------- */
   const contextString = `
-BUSINESS:
+BUSINESS PROFILE:
 ${JSON.stringify(context?.business || {}, null, 2)}
 
-CATEGORY:
+CATEGORY RULES:
 ${JSON.stringify(context?.category || {}, null, 2)}
 `;
 
-  console.log("🧪 ContextString type:", typeof contextString); // must be "string"
+  /* -------------------------------------------------
+     📜 History String (Memory) - NEW
+  -------------------------------------------------- */
+  const historyContext = history 
+    ? `\n=== CONVERSATION HISTORY (Last 5 messages) ===\n${history}\n==========================================\n`
+    : "\n=== NO PREVIOUS HISTORY (New Conversation) ===\n";
+
+  console.log("🧪 ContextString type:", typeof contextString); 
 
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      temperature: 0,
+      temperature: 0, // Strict logic
       messages: [
         {
           role: "system",
           content: `
 You are an intent and entity extraction engine for a WhatsApp business assistant.
+
+${historyContext}  <-- 🧠 THIS IS THE MEMORY
+
+--------------------------------
+🧠 CONTEXT AWARENESS RULES (CRITICAL):
+1. **Look at the HISTORY first.**
+2. If the user answers "Yes", "Agreed", or provides a Date/Time (e.g., "Sunday", "Tomorrow"), check the LAST message from the AGENT.
+   - If Agent asked about a Site Visit -> Intent is 'schedule_site_visit' or 'book_appointment'.
+   - If Agent asked about Budget -> Intent is 'ask_budget'.
+   - If Agent asked about Location -> Intent is 'ask_location'.
+3. Do NOT classify as "ask_hours" unless the user explicitly asks "When are you open?" or "What are your timings?".
+4. If the user is confirming a time for a visit, extract that time into 'entities.time' and 'entities.date'.
 
 --------------------------------
 ALLOWED INTENTS:
@@ -76,7 +95,7 @@ SUPPORT:
 - request_human
 
 --------------------------------
-ENTITY RULES (VERY IMPORTANT)
+ENTITY RULES:
 
 APPOINTMENT:
 - Service name → entities.service
@@ -116,11 +135,11 @@ JSON FORMAT (STRICT):
         },
         {
           role: "system",
-          content: contextString   // ✅ STRING ONLY
+          content: contextString   // ✅ Business Data
         },
         {
           role: "user",
-          content: String(userMessage) // ✅ STRING ONLY
+          content: String(userMessage) // ✅ User's Current Message
         }
       ]
     });
@@ -136,7 +155,7 @@ JSON FORMAT (STRICT):
     console.error("❌ [IntentService] ERROR while detecting intent");
     console.error(error.message);
 
-    // 🔒 SAFE FALLBACK (never throw from here)
+    // 🔒 SAFE FALLBACK
     return {
       intent: "unknown",
       confidence: 0,

@@ -6,7 +6,10 @@ import { Usage } from "../../shared/models/Usage.model.js";
 import { detectIntent } from "../../services/intent.service.js";
 import { decideNextStep } from "../../services/agent.service.js";
 import { dispatchAction } from "../../services/actionDispatcher.service.js";
-// import { sendTextMessage } from "../../services/whatsapp.service.js"; // 👈 Abhi iski zaroorat nahi
+// import { sendTextMessage } from "../../services/whatsapp.service.js"; 
+
+// AI Response Generator Import
+import { generateAIResponse } from "../../services/response.generator.js";
 
 import { resolveCategory } from "../../services/categoryResolver.service.js";
 import { isDuplicateMessage } from "../../services/messageDedup.service.js";
@@ -86,14 +89,33 @@ export async function handleIncomingMessage(job) {
     );
 
     /* ─────────────────────────────
+       4.5️⃣ FETCH CONVERSATION HISTORY (MEMORY LAYER)
+    ───────────────────────────── */
+    // Pichle 5 messages nikalo (Recent to Old)
+    const rawHistory = await Message.find({ conversationId: conversation._id })
+      .sort({ createdAt: -1 }) // Newest first
+      .limit(6); // Current msg + 5 old
+
+    // Chronological order me convert karo (Old -> New)
+    const history = rawHistory
+      .reverse()
+      .map(msg => `${msg.from === "user" ? "User" : "Agent"}: ${msg.text}`)
+      .join("\n");
+
+    console.log(`🧠 Context Loaded: ${rawHistory.length - 1} previous messages.`);
+
+    /* ─────────────────────────────
        5️⃣ CATEGORY & INTENT
     ───────────────────────────── */
     const category = resolveCategory(business);
-    
-    console.log("🧠 [STEP 6] Detecting Intent...");
+
+    console.log("🧠 [STEP 6] Detecting Intent with Context...");
+
+    // 👇 History pass kar rahe hain intent detection ke liye
     const intentResult = await detectIntent({
       context: { business, category },
-      userMessage: msgBody
+      userMessage: msgBody,
+      history: history
     });
 
     console.log(`📦 Intent Detected: ${intentResult.intent} (Conf: ${intentResult.confidence})`);
@@ -109,26 +131,24 @@ export async function handleIncomingMessage(job) {
         business.agentConfig?.responses?.lowConfidence ||
         "Mujhe thoda confusion ho raha hai 🙂";
 
-      // 🛑 MOCK SENDING (Log Only)
       console.log("\n🔸🔸🔸 [MOCK WHATSAPP REPLY] 🔸🔸🔸");
       console.log(`📤 Sending to: ${from}`);
       console.log(`💬 Message: "${fallback}"`);
       console.log("🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸\n");
-
-      // await sendTextMessage(from, fallback, phoneNumberId); // Commented out for testing
 
       await Message.create({
         conversationId: conversation._id,
         from: "agent",
         text: fallback
       });
-      
+
       return { status: "success", type: "fallback" };
     }
 
     /* ─────────────────────────────
-       7️⃣ DECISION & ACTION
+       7️⃣ DECISION & ACTION (LOGIC LAYER)
     ───────────────────────────── */
+    intentResult.originalMessage = msgBody;
     const decision = decideNextStep(intentResult, {
       business,
       category
@@ -146,30 +166,32 @@ export async function handleIncomingMessage(job) {
     }
 
     /* ─────────────────────────────
-       8️⃣ FINAL RESPONSE
+       8️⃣ AI RESPONSE GENERATION (LANGUAGE LAYER)
     ───────────────────────────── */
-    let finalMessage = decision.message;
+    console.log("🤖 Generating AI Response...");
 
-    if (decision.action === ACTIONS.CREATE_TICKET && actionResult?._id) {
-      finalMessage = finalMessage.replace(
-        "{{ticketId}}",
-        actionResult._id.toString()
-      );
-    }
+    intentResult.originalMessage = msgBody;
 
-    if (finalMessage) {
-      // 🛑 MOCK SENDING (Log Only)
-      console.log("\n🔹🔹🔹 [MOCK WHATSAPP REPLY] 🔹🔹🔹");
+    const aiContext = {
+      ...decision,
+      actionResult
+    };
+
+    // 👇 UPDATED: Pass 'history' to AI generator so it remembers context
+    const aiReply = await generateAIResponse(business, intentResult, aiContext, history);
+
+    if (aiReply) {
+      console.log("\n🔹🔹🔹 [AI GENERATED REPLY] 🔹🔹🔹");
       console.log(`📤 Sending to: ${from}`);
-      console.log(`💬 Message: "${finalMessage}"`);
+      console.log(`💬 Message: "${aiReply}"`);
       console.log("🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹\n");
 
-      // await sendTextMessage(from, finalMessage, phoneNumberId); // Commented out for testing
+      // await sendTextMessage(from, aiReply, phoneNumberId); 
 
       await Message.create({
         conversationId: conversation._id,
         from: "agent",
-        text: finalMessage
+        text: aiReply
       });
     }
 
@@ -181,6 +203,6 @@ export async function handleIncomingMessage(job) {
   } catch (err) {
     console.error("❌ [FATAL ERROR] Job failed inside handler:", messageId);
     console.error(err);
-    throw err; 
+    throw err;
   }
 }
