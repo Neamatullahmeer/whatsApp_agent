@@ -2,17 +2,17 @@ import { Business } from "../../shared/models/Business.model.js";
 import { Conversation } from "../../shared/models/Conversation.model.js";
 import { Message } from "../../shared/models/Message.model.js";
 import { Usage } from "../../shared/models/Usage.model.js";
+import { Campaign } from "../../shared/models/Campaign.model.js"; 
 
+// Services
 import { detectIntent } from "../../services/intent.service.js";
 import { decideNextStep } from "../../services/agent.service.js";
 import { dispatchAction } from "../../services/actionDispatcher.service.js";
-// import { sendTextMessage } from "../../services/whatsapp.service.js"; 
-
-// AI Response Generator Import
+import { sendWhatsAppMessage } from "../../services/whatsapp.service.js";
 import { generateAIResponse } from "../../services/response.generator.js";
-
 import { resolveCategory } from "../../services/categoryResolver.service.js";
 import { isDuplicateMessage } from "../../services/messageDedup.service.js";
+import { logEvent } from "../../services/audit.service.js"; 
 
 import { ACTIONS } from "../../constants/actionTypes.js";
 
@@ -21,7 +21,8 @@ export async function handleIncomingMessage(job) {
     phoneNumberId,
     from,
     msgBody,
-    messageId
+    messageId,
+    campaignId // 👈 If broadcast job
   } = job.data;
 
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -36,7 +37,6 @@ export async function handleIncomingMessage(job) {
       console.log("⚠️ [STOP] Duplicate message ignored:", messageId);
       return { status: "ignored", reason: "duplicate_message" };
     }
-    console.log("✅ [STEP 0] Message is unique");
 
     /* ─────────────────────────────
        1️⃣ LOAD BUSINESS
@@ -48,14 +48,16 @@ export async function handleIncomingMessage(job) {
     }
 
     /* ─────────────────────────────
-       2️⃣ ENSURE CONVERSATION
+       2️⃣ ENSURE CONVERSATION & SAVE USER MESSAGE
     ───────────────────────────── */
+    // Find active conversation
     let conversation = await Conversation.findOne({
       businessId: business._id,
       userPhone: from,
-      status: "active"
+      status: { $in: ["active", "human"] } 
     });
 
+    // Create new if not exists
     if (!conversation) {
       conversation = await Conversation.create({
         businessId: business._id,
@@ -64,100 +66,104 @@ export async function handleIncomingMessage(job) {
         lastMessageAt: new Date()
       });
     } else {
+      // Update last activity
       conversation.lastMessageAt = new Date();
       await conversation.save();
     }
 
-    /* ─────────────────────────────
-       3️⃣ SAVE USER MESSAGE
-    ───────────────────────────── */
-    await Message.create({
-      conversationId: conversation._id,
-      from: "user",
-      text: msgBody,
-      messageId
-    });
+    // Save incoming User Message (Skip if it's a broadcast trigger)
+    if (!campaignId) {
+        await Message.create({
+            conversationId: conversation._id,
+            from: "user",
+            text: msgBody,
+            messageId
+        });
+    }
+
+    // 🛑 HUMAN TAKEOVER CHECK
+    if (conversation.status === "human") {
+      console.log("👨‍💼 [STOP] Conversation is in HUMAN mode. AI paused.");
+      return { status: "paused", reason: "human_mode" };
+    }
 
     /* ─────────────────────────────
-       4️⃣ USAGE UPDATE
+       3️⃣ FETCH HISTORY (CONTEXT) - CRITICAL UPDATE
     ───────────────────────────── */
-    const month = new Date().toISOString().slice(0, 7);
-    await Usage.updateOne(
-      { businessId: business._id, month },
-      { $inc: { messages: 1 } },
-      { upsert: true }
-    );
-
-    /* ─────────────────────────────
-       4.5️⃣ FETCH CONVERSATION HISTORY (MEMORY LAYER)
-    ───────────────────────────── */
-    // Pichle 5 messages nikalo (Recent to Old)
+    // Fetch last 10 messages for context
     const rawHistory = await Message.find({ conversationId: conversation._id })
-      .sort({ createdAt: -1 }) // Newest first
-      .limit(6); // Current msg + 5 old
+      .sort({ createdAt: -1 })
+      .limit(10);
 
-    // Chronological order me convert karo (Old -> New)
+    // Format history for AI (Oldest first)
+    // Format: "User: Hello\nAgent: Hi there"
     const history = rawHistory
       .reverse()
       .map(msg => `${msg.from === "user" ? "User" : "Agent"}: ${msg.text}`)
       .join("\n");
 
-    console.log(`🧠 Context Loaded: ${rawHistory.length - 1} previous messages.`);
-
     /* ─────────────────────────────
-       5️⃣ CATEGORY & INTENT
+       4️⃣ INTENT DETECTION
     ───────────────────────────── */
     const category = resolveCategory(business);
-
-    console.log("🧠 [STEP 6] Detecting Intent with Context...");
-
-    // 👇 History pass kar rahe hain intent detection ke liye
+    
     const intentResult = await detectIntent({
-      context: { business, category },
+      context: { business, category }, // Pass business info
       userMessage: msgBody,
-      history: history
+      history: history // Pass history context
     });
 
     console.log(`📦 Intent Detected: ${intentResult.intent} (Conf: ${intentResult.confidence})`);
+    
+    // Log detected entities
+    if (intentResult.entities && Object.keys(intentResult.entities).length > 0) {
+        console.log("🧩 Entities:", intentResult.entities);
+    }
 
     /* ─────────────────────────────
-       6️⃣ LOW CONFIDENCE / FALLBACK
+       5️⃣ LOW CONFIDENCE HANDLING
     ───────────────────────────── */
+    // If confidence is low OR intent is not allowed for this business
     if (
       intentResult.confidence < 0.6 ||
-      !category.enabledIntents.includes(intentResult.intent)
+      (category.enabledIntents && !category.enabledIntents.includes(intentResult.intent))
     ) {
-      const fallback =
-        business.agentConfig?.responses?.lowConfidence ||
-        "Mujhe thoda confusion ho raha hai 🙂";
-
-      console.log("\n🔸🔸🔸 [MOCK WHATSAPP REPLY] 🔸🔸🔸");
-      console.log(`📤 Sending to: ${from}`);
-      console.log(`💬 Message: "${fallback}"`);
-      console.log("🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸🔸\n");
-
+      const fallbackMsg = business.agentConfig?.responses?.lowConfidence || "Maaf kijiye, main samajh nahi paya. 🤔 Kya aap thoda detail mein batayenge?";
+      
+      // Send fallback
+      await sendWhatsAppMessage(from, { text: fallbackMsg }, phoneNumberId);
+      
+      // Save agent response
       await Message.create({
         conversationId: conversation._id,
         from: "agent",
-        text: fallback
+        text: fallbackMsg
       });
 
       return { status: "success", type: "fallback" };
     }
 
     /* ─────────────────────────────
-       7️⃣ DECISION & ACTION (LOGIC LAYER)
+       6️⃣ AGENT BRAIN DECISION 🧠
     ───────────────────────────── */
     intentResult.originalMessage = msgBody;
-    const decision = decideNextStep(intentResult, {
+    
+    // Pass history to Agent Service for smarter replies
+    const decision = await decideNextStep(intentResult, {
       business,
-      category
+      category,
+      userMessage: msgBody,
+      history: history 
     });
 
+    /* ─────────────────────────────
+       7️⃣ ACTION DISPATCH
+    ───────────────────────────── */
     let actionResult = null;
-
+    
     if (decision.action && decision.action !== ACTIONS.NONE) {
       console.log(`⚡ Dispatching Action: ${decision.action}`);
+      
       actionResult = await dispatchAction(decision, {
         businessId: business._id,
         userPhone: from,
@@ -166,34 +172,65 @@ export async function handleIncomingMessage(job) {
     }
 
     /* ─────────────────────────────
-       8️⃣ AI RESPONSE GENERATION (LANGUAGE LAYER)
+       8️⃣ RESPONSE GENERATION & SENDING
     ───────────────────────────── */
-    console.log("🤖 Generating AI Response...");
-
-    intentResult.originalMessage = msgBody;
-
-    const aiContext = {
-      ...decision,
-      actionResult
-    };
-
-    // 👇 UPDATED: Pass 'history' to AI generator so it remembers context
-    const aiReply = await generateAIResponse(business, intentResult, aiContext, history);
-
-    if (aiReply) {
-      console.log("\n🔹🔹🔹 [AI GENERATED REPLY] 🔹🔹🔹");
-      console.log(`📤 Sending to: ${from}`);
-      console.log(`💬 Message: "${aiReply}"`);
-      console.log("🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹\n");
-
-      // await sendTextMessage(from, aiReply, phoneNumberId); 
-
-      await Message.create({
-        conversationId: conversation._id,
-        from: "agent",
-        text: aiReply
-      });
+    let finalMessageText = decision.message;
+    
+    // If text is missing or contains instruction placeholder, generate via AI
+    if (!finalMessageText || finalMessageText.includes("[SYSTEM INSTRUCTION") || decision.useAI) {
+       console.log("🤖 Generating AI Response...");
+       finalMessageText = await generateAIResponse(business, intentResult, { ...decision, actionResult }, history);
     }
+
+    // 📤 Send via WhatsApp
+    await sendWhatsAppMessage(
+      from, 
+      {
+        text: finalMessageText || "...", // Fallback text
+        media: decision.media 
+      }, 
+      phoneNumberId
+    );
+
+    /* ─────────────────────────────
+       9️⃣ TRACKING & LOGGING
+    ───────────────────────────── */
+    
+    // 1. Save Agent Message to DB
+    await Message.create({
+      conversationId: conversation._id,
+      from: "agent",
+      text: finalMessageText,
+    });
+
+    // 2. Update Campaign Stats (If Broadcast)
+    if (campaignId) {
+        await Campaign.updateOne(
+            { _id: campaignId },
+            { $inc: { "stats.sent": 1 } }
+        );
+    }
+
+    // 3. Audit Log
+    await logEvent({
+      businessId: business._id,
+      conversationId: conversation._id,
+      actorType: "ai",
+      event: "ai_reply_sent",
+      action: decision.action || "response_sent", 
+      meta: {
+        intent: intentResult.intent,
+        hasMedia: !!decision.media
+      }
+    });
+
+    // 4. Usage Update
+    const month = new Date().toISOString().slice(0, 7);
+    await Usage.updateOne(
+      { businessId: business._id, month },
+      { $inc: { messages: 1 } },
+      { upsert: true }
+    );
 
     console.log("✅ [FINISHED] Job processed successfully:", messageId);
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
@@ -203,6 +240,7 @@ export async function handleIncomingMessage(job) {
   } catch (err) {
     console.error("❌ [FATAL ERROR] Job failed inside handler:", messageId);
     console.error(err);
-    throw err;
+    // Don't throw error to stop worker from crashing, just log it
+    return { status: "failed", error: err.message };
   }
 }

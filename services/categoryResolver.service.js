@@ -1,86 +1,76 @@
-import { CATEGORY_REGISTRY } from "../categories/categoryRegistry.js";
-
 /* ─────────────────────────────────────────────────────────────────
-   🚀 AUTOMATIC CATEGORY RESOLVER
+   🚀 AUTOMATIC CATEGORY RESOLVER & DEFAULTS
    
-   Is file ka kaam hai Business Category ke hisaab se 
-   "Default Features" automatically enable karna.
-   
-   Fayda: Baar-baar Database mein 'enabledIntents' update nahi karna padega.
+   Is file ka kaam hai Business Category ke hisaab se:
+   1. Default Features (Intents) enable karna.
+   2. Default Greetings (Hindi/English) set karna.
 ───────────────────────────────────────────────────────────────── */
 
 // 1. Define Default Intents per Category
-const CATEGORY_DEFAULTS = {
-  // 🏢 CRM & SAAS BUSINESS
+const CATEGORY_INTENTS = {
   crm: [
-    "greeting",
-    "ask_services",       // Industry pitch / "Kya karte ho?"
-    "product_inquiry",    // Features & Sales
-    "pricing_request",    // Price puchna
-    "ask_price",          // (Alternate)
-    "book_appointment",   // Demo/Meeting
-    "request_callback",
-    "report_issue",
-    "check_ticket_status",
-    "request_human"
+    "greeting", "product_inquiry", "pricing_request", "request_callback", "ask_features"
   ],
-
-  // 🏠 REAL ESTATE BUSINESS
   real_estate: [
-    "greeting",
-    "ask_services",       // "Real estate business hai mera"
-    "search_property",    // "2BHK Pune mein chahiye"
-    "ask_budget",
-    "ask_location",
-    "schedule_site_visit", // "Site visit kab karu?"
-    "book_appointment",    // (Backup for visit)
-    "request_callback",
-    "request_human",
-    "ask_hours"
+    "greeting", "search_property", "ask_location", "ask_budget", "schedule_site_visit", "ask_contact"
   ],
-
-  // 🏥 HEALTHCARE / CLINIC (Future Use)
-  healthcare: [
-    "greeting",
-    "book_appointment",   // Doctor appointment
-    "ask_services",
-    "ask_price",          // Consultation fee
-    "request_human"
+  support: [
+    "greeting", "report_issue", "check_ticket_status", "request_human", "thank_you"
   ],
-
-  // 🛒 GENERIC / OTHER (Fallback)
+  adtech: [
+    "greeting", "ask_services", "product_inquiry", "pricing_request", "request_human", "report_issue"
+  ],
+  appointment: [
+    "greeting", "ask_services", "ask_price", "ask_hours", "book_appointment"
+  ],
   other: [
-    "greeting",
-    "ask_services",
-    "product_inquiry",
-    "ask_price",
-    "request_callback",
-    "request_human"
+    "greeting", "ask_services", "product_inquiry", "ask_price", "request_callback"
   ]
 };
 
+// 2. Define Default Responses (Hindi/Hinglish flavor preserved 🌶️)
+const CATEGORY_RESPONSES = {
+  crm: "Hello! 👋 Aap kis product ya service ke baare me jaanana chahte hain?",
+  
+  real_estate: "Hello! 👋 Aap kis area ya type ki property dekh rahe hain?",
+  
+  support: "Hello! 👋 Aap apni problem short me bata sakte hain?",
+  
+  appointment: "Hello! 👋 Aap kaise madad chahte hain? Appointment book karna hai?",
+  
+  adtech: "Hello! 🚀 Ready to scale your campaigns? Kaise help kar sakte hain?",
+  
+  other: "Hello! 👋 How can I help you today?"
+};
+
 export function resolveCategory(business) {
-  // 1. Business ka category type nikalo (Database se)
-  // Agar null hai, toh 'other' maano.
+  // 1. Category Type nikalo
   const type = business.categoryType || "other";
 
-  // 2. Us category ke Code-Level Default Intents uthao
-  const defaultIntents = CATEGORY_DEFAULTS[type] || CATEGORY_DEFAULTS["other"];
-
-  // 3. Agar DB mein kuch EXTRA intents enable kiye hain toh wo bhi lelo
-  // (Client specific customization ke liye)
+  // 2. Default Intents uthao
+  const defaultIntents = CATEGORY_INTENTS[type] || CATEGORY_INTENTS["other"];
   const dbIntents = business.agentConfig?.enabledIntents || [];
 
-  // 4. 🔥 THE MAGIC MERGE 🔥
-  // Code Defaults + DB Custom Intents ko jod do.
-  // Set use karke duplicates hata do.
+  // 3. Merge Intents (Unique)
   const finalIntents = [...new Set([...defaultIntents, ...dbIntents])];
 
-  console.log(`🔍 Resolved Category: [${type}] | Active Intents: ${finalIntents.length}`);
+  // 4. Greeting Logic (DB Override > Category Default)
+  const dbGreeting = business.agentConfig?.responses?.greeting;
+  const defaultGreeting = CATEGORY_RESPONSES[type] || CATEGORY_RESPONSES["other"];
+
+  console.log(`🔍 Resolved Category: [${type}] | Greeting: "${dbGreeting || defaultGreeting}"`);
 
   return {
     type: type,
-    enabledIntents: finalIntents, // Ab ye list Handler ko milegi
-    config: business.agentConfig || {}
+    enabledIntents: finalIntents,
+    
+    // Config object jo controller use karega default set karne ke liye
+    config: {
+      ...business.agentConfig,
+      responses: {
+        ...business.agentConfig?.responses,
+        greeting: dbGreeting || defaultGreeting
+      }
+    }
   };
 }

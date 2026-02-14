@@ -8,7 +8,8 @@ const businessSchema = new mongoose.Schema(
     phoneNumberId: {
       type: String,
       required: true,
-      unique: true
+      unique: true,
+      index: true // ⚡ Faster Lookup for incoming webhooks
     },
 
     /* ─────────────────────────────
@@ -20,36 +21,41 @@ const businessSchema = new mongoose.Schema(
         required: true
       },
 
+      // Frontend display category (Sirf dikhane ke liye)
       category: {
         type: String,
-        enum: ["clinic", "salon", "service", "real_estate", "other"],
-        default: "clinic"
+        enum: ["clinic", "salon", "service", "real_estate", "agency", "retail", "other"], 
+        default: "service"
       },
 
-      description: String,
+      description: String, // Business ka short bio
 
       language: {
         type: String,
         enum: ["hinglish", "english", "hindi"],
         default: "hinglish"
-      }
+      },
+      
+      logoUrl: String // Business ka logo (Optional)
     },
 
     /* ─────────────────────────────
-       🧩 CATEGORY SYSTEM (ENGINE)
+       🧩 CATEGORY SYSTEM (ENGINE LOGIC)
     ───────────────────────────── */
     categoryType: {
       type: String,
-      enum: ["appointment", "real_estate", "crm", "support"],
+      // 🔥 Logic Engine: Decide karega ki AdTech features on honge ya Real Estate ke
+      enum: ["appointment", "real_estate", "crm", "support", "adtech", "healthcare"], 
       default: "appointment"
     },
 
     /* ─────────────────────────────
-       👤 OWNER / ADMIN
+       👤 OWNER / ADMIN DETAILS
     ───────────────────────────── */
     owner: {
       name: String,
-      phone: String
+      phone: String,
+      email: String
     },
 
     /* ─────────────────────────────
@@ -58,30 +64,48 @@ const businessSchema = new mongoose.Schema(
     availability: {
       workingDays: {
         type: [String],
-        default: [
-          "monday",
-          "tuesday",
-          "wednesday",
-          "thursday",
-          "friday",
-          "saturday"
-        ]
+        default: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
       },
-
       workingHours: {
         start: { type: String, default: "10:00" },
         end: { type: String, default: "20:00" }
       }
     },
 
-    /* ─────────────────────────────
-       🧾 SERVICES (APPOINTMENT USE)
-    ───────────────────────────── */
+    /* ─────────────────────────────────────────────────────────────
+       🛍️ SERVICES & PRODUCTS (ADVANCED) 🚀
+       Ab AI yahan se Image aur Details utha kar customer ko bhejega.
+    ───────────────────────────────────────────────────────────── */
     services: [
       {
-        name: String,
-        price: String,     // "500" | "depends"
-        duration: String   // "30 min"
+        // 1. Basic Info
+        name: { type: String, required: true }, // e.g., "Luxury 3BHK Apartment"
+        
+        // 2. Pricing (Flexible)
+        price: { type: String, default: "Contact for Price" }, // e.g., "1.5 Cr" or "$50"
+        
+        // 3. AI Pitching Content 🧠
+        description: { 
+           type: String, 
+           default: "Premium quality service." 
+        }, // AI ye line use karega features batane ke liye
+        
+        // 4. 📷 PRODUCT IMAGE (URL)
+        // Cloudinary/S3 link yahan aayega. 
+        imageUrl: { 
+          type: String, 
+          default: "" // Empty string matlab no image
+        },
+
+        // 5. Categorization (Internal)
+        // Example: Real Estate me "Rent/Sale", Clinic me "Consultation/Surgery"
+        category: { type: String, default: "general" },
+
+        // 6. Inventory Control
+        isActive: { type: Boolean, default: true }, // Out of stock hai to False kar do
+
+        // 7. Extra Metadata (Optional)
+        duration: String // "30 min" (Sirf appointments ke liye)
       }
     ],
 
@@ -89,40 +113,39 @@ const businessSchema = new mongoose.Schema(
        🤖 AGENT CONFIG (CORE BRAIN)
     ───────────────────────────── */
     agentConfig: {
+      // Intents dynamically 'categoryResolver' se aayenge, par yahan store honge
       enabledIntents: {
         type: [String],
-        default: [
-          "greeting",
-          "ask_services",
-          "ask_price",
-          "ask_hours",
-          "book_appointment"
-        ]
+        default: [] 
       },
 
+      // Feature Toggles
       actionsEnabled: {
-        create_appointment: { type: Boolean, default: true }
+        create_appointment: { type: Boolean, default: true },
+        create_lead: { type: Boolean, default: true },
+        escalate_to_human: { type: Boolean, default: true }
       },
 
+      // Business Rules
       rules: {
         sundayClosed: { type: Boolean, default: true }
       },
 
+      // Custom AI Responses
       responses: {
         greeting: {
           type: String,
-          default: "Hello! 👋 Aap kaise madad chahte hain?"
+          default: "Hello! 👋 How can we help you grow today?"
         },
         lowConfidence: {
           type: String,
-          default:
-            "Mujhe thoda confusion ho raha hai. Kripya detail me batayein 🙂"
+          default: "Maaf kijiye, main samajh nahi paya. Thoda detail mein batayenge? 🤔"
         }
       }
     },
 
     /* ─────────────────────────────
-       📊 SAAS PLAN & STATUS
+       📊 SAAS PLAN & SUBSCRIPTION
     ───────────────────────────── */
     plan: {
       type: String,
@@ -133,7 +156,7 @@ const businessSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ["draft", "active", "paused"],
-      default: "draft"
+      default: "active"
     }
   },
   {
@@ -141,6 +164,8 @@ const businessSchema = new mongoose.Schema(
   }
 );
 
+// ⚡ Compound Indexes for Speed
+businessSchema.index({ phoneNumberId: 1, status: 1 });
 
 export const Business =
   mongoose.models.Business ||

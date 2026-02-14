@@ -1,5 +1,6 @@
 import { Lead } from "../shared/models/Lead.model.js";
 import { Conversation } from "../shared/models/Conversation.model.js";
+import { escalateToHuman } from "./handoff.service.js"; // ✅ Updated name here
 
 /**
  * REQUEST CALLBACK
@@ -51,3 +52,14 @@ export async function requestCallback(payload, meta) {
   return lead;
 }
 
+export async function handleCallbackIntent({
+  conversationId
+}) {
+  // 🔴 AI yahin ruk jaata hai
+  await escalateToHuman(conversationId); // ✅ Updated call here
+
+  return {
+    message:
+      "📞 Aapki request agent ko de di gayi hai. Thodi der me call aayega."
+  };
+}

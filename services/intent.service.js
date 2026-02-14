@@ -23,14 +23,13 @@ console.log("🤖 [IntentService] OpenAI client initialized");
 /* =========================
    🧠 Intent Detection
 ========================= */
-// 👇 UPDATE: Added 'history' parameter
 export async function detectIntent({ context, userMessage, history }) {
   console.log("🧠 [IntentService] detectIntent called");
   console.log("➡️ User message:", userMessage);
 
   /* -------------------------------------------------
-     🔒 Context String (Business Data)
-  -------------------------------------------------- */
+      🔒 Context String (Business Data)
+   -------------------------------------------------- */
   const contextString = `
 BUSINESS PROFILE:
 ${JSON.stringify(context?.business || {}, null, 2)}
@@ -40,8 +39,8 @@ ${JSON.stringify(context?.category || {}, null, 2)}
 `;
 
   /* -------------------------------------------------
-     📜 History String (Memory) - NEW
-  -------------------------------------------------- */
+      📜 History String (Memory)
+   -------------------------------------------------- */
   const historyContext = history 
     ? `\n=== CONVERSATION HISTORY (Last 5 messages) ===\n${history}\n==========================================\n`
     : "\n=== NO PREVIOUS HISTORY (New Conversation) ===\n";
@@ -51,70 +50,60 @@ ${JSON.stringify(context?.category || {}, null, 2)}
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      temperature: 0, // Strict logic
+      temperature: 0, // Strict logic for classification
       messages: [
         {
           role: "system",
           content: `
 You are an intent and entity extraction engine for a WhatsApp business assistant.
 
-${historyContext}  <-- 🧠 THIS IS THE MEMORY
+${historyContext}
 
 --------------------------------
-🧠 CONTEXT AWARENESS RULES (CRITICAL):
+🧠 CONTEXT AWARENESS RULES:
 1. **Look at the HISTORY first.**
-2. If the user answers "Yes", "Agreed", or provides a Date/Time (e.g., "Sunday", "Tomorrow"), check the LAST message from the AGENT.
-   - If Agent asked about a Site Visit -> Intent is 'schedule_site_visit' or 'book_appointment'.
-   - If Agent asked about Budget -> Intent is 'ask_budget'.
-   - If Agent asked about Location -> Intent is 'ask_location'.
-3. Do NOT classify as "ask_hours" unless the user explicitly asks "When are you open?" or "What are your timings?".
-4. If the user is confirming a time for a visit, extract that time into 'entities.time' and 'entities.date'.
+2. If the user answers "Yes", "Agreed", or provides a Date/Time, check the LAST message from the AGENT to determine context.
+3. If the user is confirming a time for a visit, extract that time into 'entities.time' and 'entities.date'.
 
 --------------------------------
 ALLOWED INTENTS:
 - greeting
-- ask_services
-- ask_price
+- ask_services         (User asks what you do or for suggestions)
+- ask_pricing
 - ask_hours
-- book_appointment
-
-REAL ESTATE:
-- search_property
-- ask_budget
-- ask_location
-- schedule_site_visit
-
-SALES / CRM:
-- product_inquiry
-- pricing_request
-- request_callback
-
-SUPPORT:
-- report_issue
-- check_ticket_status
-- request_human
+- book_appointment     (Scheduling a call or meeting)
+- search_property      (Real Estate specific)
+- ask_budget           (Real Estate specific)
+- ask_location         (Real Estate specific)
+- schedule_site_visit  (Real Estate specific)
+- request_human        (Talk to support)
 
 --------------------------------
-ENTITY RULES:
+ENTITY EXTRACTION RULES (CRITICAL):
 
-APPOINTMENT:
-- Service name → entities.service
-- Date → entities.date
-- Time → entities.time
+1. **BUSINESS TYPE (👇 NEW):**
+   - If user mentions their industry or profession (e.g., "Real Estate", "Gym", "Salon", "Doctor", "Restaurant"), extract it to 'entities.business_type'.
+   - Example: "I run a gym" -> business_type: "gym"
+   - Example: "Real estate business suggestion?" -> business_type: "real_estate"
 
-REAL ESTATE:
-- Budget / price / lakh / crore → entities.budget
-- City / area / location → entities.location
-- 1 bhk / 2 bhk / flat / villa → entities.property_type
-- NEVER put real-estate info in "service"
+2. **APPOINTMENT / TIME:**
+   - Date -> entities.date (e.g., "tomorrow", "sunday")
+   - Time -> entities.time (e.g., "5pm", "morning")
+
+3. **REAL ESTATE DETAILS:**
+   - Budget / price -> entities.budget
+   - City / area -> entities.location
+   - Property -> entities.property_type (e.g., 2bhk, villa)
+
+4. **SERVICE:**
+   - Specific service name -> entities.service (e.g., "crm", "whatsapp bot")
 
 --------------------------------
 RULES:
-- Respond ONLY in valid JSON
-- Do NOT explain anything
-- confidence must be between 0 and 1
-- ALWAYS return all entity keys
-- If entity is missing, set it to null
+- Respond ONLY in valid JSON.
+- Do NOT explain anything.
+- Confidence must be between 0 and 1.
+- If entity is missing, set it to null.
 
 --------------------------------
 JSON FORMAT (STRICT):
@@ -124,6 +113,7 @@ JSON FORMAT (STRICT):
   "confidence": number,
   "entities": {
     "service": string | null,
+    "business_type": string | null,   
     "date": string | null,
     "time": string | null,
     "budget": string | null,
@@ -134,23 +124,24 @@ JSON FORMAT (STRICT):
           `
         },
         {
-          role: "system",
-          content: contextString   // ✅ Business Data
-        },
-        {
           role: "user",
-          content: String(userMessage) // ✅ User's Current Message
+          content: `Context:\n${contextString}\n\nUser Message:\n${String(userMessage)}`
         }
       ]
     });
 
     const raw = completion.choices[0]?.message?.content;
-    console.log("📦 Raw model output:", raw);
+    
+    // Clean up if Markdown code blocks are returned
+    const cleanJson = raw.replace(/```json/g, "").replace(/```/g, "").trim();
 
-    const parsed = JSON.parse(raw);
+    console.log("📦 Raw model output:", cleanJson);
+
+    const parsed = JSON.parse(cleanJson);
     console.log("✅ Parsed intent result:", parsed);
 
     return parsed;
+
   } catch (error) {
     console.error("❌ [IntentService] ERROR while detecting intent");
     console.error(error.message);
@@ -161,6 +152,7 @@ JSON FORMAT (STRICT):
       confidence: 0,
       entities: {
         service: null,
+        business_type: null,
         date: null,
         time: null,
         budget: null,

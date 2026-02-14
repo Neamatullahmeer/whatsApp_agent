@@ -4,7 +4,11 @@ import { createLead } from "./lead.service.js";
 import { scheduleSiteVisit } from "./siteVisit.service.js";
 import { requestCallback } from "./callback.service.js";
 import { createTicket } from "./ticket.service.js";
-import { escalateToHuman } from "./handoff.service.js";
+
+// 👇 NEW IMPORTS (Traffic Police Logic ke liye 🚦)
+import { findBestAgent } from "./autoAssignment.service.js";
+import { assignConversation } from "./assignment.service.js";
+// import { escalateToHuman } from "./handoff.service.js"; // 👈 Ab iski zarurat nahi hai, hum yahi handle karenge
 
 export async function dispatchAction(actionResult, meta) {
   const { action, payload = {} } = actionResult;
@@ -44,8 +48,54 @@ export async function dispatchAction(actionResult, meta) {
         result = await createTicket(payload, meta);
         break;
 
+      /* ──────────────────────────────────────────
+         🚦 SMART ROUTING (SALES vs SUPPORT)
+      ────────────────────────────────────────── */
       case ACTIONS.ESCALATE_TO_HUMAN:
-        result = await escalateToHuman(payload, meta);
+        const { businessId, conversationId } = meta;
+        // Agent Service se department aaya hoga ('sales' ya 'support')
+        const targetDept = payload.department || "general";
+
+        console.log(`🔍 Finding Best Agent for Department: ${targetDept}`);
+
+        // 1️⃣ Skill Based Search: Specific department ka banda dhundo
+        let bestAgent = await findBestAgent({
+            businessId,
+            strategy: "SKILL_BASED",
+            requiredSkill: targetDept
+        });
+
+        // 2️⃣ Fallback: Agar Support ka koi banda online nahi hai, toh Round Robin se kisi ko bhi do
+        if (!bestAgent) {
+             console.log(`⚠️ No agent found in ${targetDept}. Falling back to Round Robin.`);
+             bestAgent = await findBestAgent({ 
+                businessId, 
+                strategy: "ROUND_ROBIN" 
+             });
+        }
+
+        if (bestAgent) {
+             // 3️⃣ Assign the Chat
+             await assignConversation({
+                conversationId,
+                userId: bestAgent._id,
+                assignedBy: "system_ai",
+                businessId
+             });
+             
+             console.log(`✅ Chat Assigned to: ${bestAgent.name} (${targetDept || "Fallback"})`);
+             
+             result = { 
+               status: "assigned", 
+               agent: bestAgent.name, 
+               department: targetDept 
+             };
+        } else {
+             // ❌ Sab Offline hain
+             console.log("❌ No agents available online.");
+             result = { status: "queued", message: "No agents available" };
+             // Optional: Yahan aap ticket create kar sakte ho fallback mein
+        }
         break;
 
       default:

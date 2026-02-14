@@ -1,10 +1,9 @@
-export async function escalateToHuman(payload, meta) {
-  console.log("🚨 Escalation requested:", {
-    businessId: meta.businessId,
-    userPhone: meta.userPhone
-  });
+import { Conversation } from "../shared/models/Conversation.model.js";
 
-  // Later:
-  // - Assign to agent
-  // - Notify support team
+// Naam 'moveToHuman' se badal kar 'escalateToHuman' kar diya
+export async function escalateToHuman(conversationId) {
+  await Conversation.updateOne(
+    { _id: conversationId },
+    { status: "human" }
+  );
 }

@@ -1,4 +1,4 @@
-import { sendTextMessage } from "./whatsapp.service.js";
+import { sendWhatsAppMessage } from "./whatsapp.service.js";
 
 export async function notifyOwnerOnAppointment({
   ownerPhone,
@@ -24,7 +24,7 @@ Customer: ${userPhone}
 `;
 console.log("owner message:", message)
 
- await sendTextMessage(ownerPhone, message);
+ await sendWhatsAppMessage(ownerPhone, message);
 }
 
 console.log("JOB TOKEN EXISTS:", !!process.env.WHATSAPP_TOKEN);

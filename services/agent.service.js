@@ -1,184 +1,139 @@
+/* =========================================================================
+   🧠 AGENT BRAIN (Decision Logic)
+   Path: src/services/agent.service.js
+   Description: Decides WHAT to do based on Intent & Entities
+   ========================================================================= */
+
 import { ACTIONS } from "../constants/actionTypes.js";
 
-export function decideNextStep(intentResult, context = {}) {
-  const { intent, entities = {} } = intentResult;
-  const { business } = context;
+// 📦 Standard Services Menu (Hardcoded for generic replies)
+const SERVICES_MENU_TEXT = `Humare paas ye options available hain: 👇
 
-  // User ka original message (intentResult ya context se nikalo)
-  // Note: Ensure karna ki handler.js mein aap ye pass kar rahe ho
-  const userMsg = (intentResult.originalMessage || context.userMessage || "").toLowerCase();
+*1. WhatsApp Automation*
+   💰 1500 INR/Month
+
+*2. CRM Integration*
+   💰 5000 INR
+
+*3. Email Marketing*
+   💰 3000 INR
+
+Aap kiske baare mein aur details (ya photos 📸) dekhna chahenge?`;
+
+/**
+ * Decides the next action and response message.
+ * @param {Object} intentResult - The output from detectIntent { intent, entities, confidence }
+ * @param {Object} context - { business, category, history, userMessage }
+ */
+export function decideNextStep(intentResult, context) {
+  const { intent, entities } = intentResult;
+
+  console.log("🤔 [AgentService] Deciding next step for:", intent);
+
+  // 🛡️ Default Decision Object
+  let decision = {
+    action: ACTIONS.NONE,
+    message: null,
+    media: null,
+    useAI: false // 👈 New Flag: If true, messageHandler will generate text via LLM
+  };
 
   switch (intent) {
-    /* ---------------- GREETING ---------------- */
-    /* ---------------- SMART GREETING / CLOSING ---------------- */
+    
+    // -----------------------------------------------------
+    // 👋 GREETING
+    // -----------------------------------------------------
     case "greeting":
-      // Keywords check karo: Kya ye 'Hello' hai ya 'Bye/Thanks'?
-      const isClosing = userMsg.includes("bye") ||
-        userMsg.includes("shukriya") ||
-        userMsg.includes("thanks") ||
-        userMsg.includes("thank you") ||
-        (userMsg.includes("nahi") && userMsg.includes("ji")); // "Ji nahi" logic
+      decision.action = ACTIONS.SEND_TEXT;
+      decision.message = "Hello 👋 Welcome to SmartBiz CRM Support. How can we help you today?";
+      break;
 
-      if (isClosing) {
-        return {
-          message: "User is saying Thanks or Goodbye. Reply politely: 'You're welcome! Have a great day! 👋'",
-          action: ACTIONS.NONE
-        };
-      }
-
-      // Agar ye normal Hello hai, toh DB wala greeting uthao
-      const dbGreeting = business?.agentConfig?.responses?.greeting;
-      return {
-        message: dbGreeting || "Hello! 👋 How can I help you today?",
-        action: ACTIONS.NONE
-      };
-    /* ---------------- ASK SERVICES / INDUSTRY PITCH (NEW 🚀) ---------------- */
+    // -----------------------------------------------------
+    // 🛠️ ASK SERVICES (Modified for Business Logic)
+    // -----------------------------------------------------
     case "ask_services":
-      return {
-        message: `User is talking about their Business Industry or asking 'What do you do?'.
+      
+      // ✅ CASE 1: Business Type Detected (e.g., "Real Estate")
+      if (entities && entities.business_type) {
+        console.log("💡 Context Found: User is in", entities.business_type);
         
-        INSTRUCTION FOR AI:
-        1. If the user mentioned a specific Industry (e.g., Real Estate, Gym, Clinic, Salon), ACKNOWLEDGE it enthusiastically.
-        2. PITCH a specific benefit for THAT industry.
-           - Real Estate: Mention "Auto-sending Property Photos, Brochures & Site Visit Reminders".
-           - Healthcare/Clinic: Mention "Appointment Reminders & Patient Follow-ups".
-           - Education: Mention "Student Updates & Fee Reminders".
-           - Retail/E-commerce: Mention "Order Updates & Abandoned Cart Recovery".
-           - General: Mention "Automating 24/7 Support & Lead Collection".
-        3. End by asking: "Shall I show you a specific DEMO for your industry?"`,
-        action: ACTIONS.NONE
-      };
-
-    /* ---------------- PRODUCT INQUIRY (SMART SALES 🧠) ---------------- */
-    case "product_inquiry":
-      const interest = entities.product || entities.service;
-
-      // 1️⃣ CHECK: Kya user buying mood mein hai? (Stop explaining, Start selling)
-      if (userMsg.includes("chahiye") || userMsg.includes("buy") || userMsg.includes("interested") || userMsg.includes("purchase") || userMsg.includes("want")) {
-        return {
-          message: `User explicitly wants to BUY/GET '${interest || "your service"}'. 
-                    Don't explain features anymore. 
-                    Enthusiastically accept the request.
-                    Tell them you are noting down their request.
-                    Ask for their Name or Email to finalize.`,
-          action: ACTIONS.CREATE_LEAD, // 🔥 Seedha Lead banao
-          payload: { interest }
-        };
+        decision.action = ACTIONS.SEND_TEXT;
+        decision.useAI = true; // 👈 Forces messageHandler to call generateAIResponse
+        
+        // Hum AI ko instruction bhej rahe hain taaki wo dynamic reply banaye
+        decision.message = `[SYSTEM INSTRUCTION: The user has a '${entities.business_type}' business. 
+        Instead of listing all services, recommend only the ONE or TWO services from (WhatsApp Automation, CRM, Email Marketing) that are best for '${entities.business_type}'.
+        Explain WHY it helps their specific business in 1-2 sentences (Hinglish).]`;
+      
+      } 
+      // ❌ CASE 2: No Business Type (Generic Query)
+      else {
+        decision.action = ACTIONS.SEND_TEXT;
+        decision.message = SERVICES_MENU_TEXT;
       }
+      break;
 
-      if (!interest) {
-        // Agar product specify nahi kiya
-        const allServices = business.services?.map(s => s.name).join(", ") || "our services";
-        return {
-          message: `List these services: ${allServices}. Ask which one they want to know about.`,
-          action: ACTIONS.ASK_MISSING_INFO
-        };
-      }
-
-      // 2️⃣ DB LOOKUP: Product Knowledge nikalna
-      const serviceDetails = business.services?.find(s =>
-        s.name.toLowerCase().includes(interest.toLowerCase())
-      );
-
-      if (serviceDetails) {
-        // 🔥 Found in DB! AI ko bolo features samjhaye
-        return {
-          message: `User asked about '${serviceDetails.name}'. 
-                    Explain these FEATURES enthusiastically: "${serviceDetails.description}". 
-                    
-                    Start with "Great choice!"
-                    After explaining, ask: "Would you like to see a Live Demo or check Pricing?"`,
-          action: ACTIONS.NONE
-        };
+    // -----------------------------------------------------
+    // 💰 ASK PRICE
+    // -----------------------------------------------------
+    case "ask_pricing":
+      decision.action = ACTIONS.SEND_TEXT;
+      // Agar specific service ka price poocha hai
+      if (entities && entities.service) {
+         decision.useAI = true;
+         decision.message = `[SYSTEM INSTRUCTION: User asked price for '${entities.service}'. Tell them it starts from standard rates but depends on customization. Ask for requirements.]`;
       } else {
-        // Not found in DB
-        return {
-          message: `We provide ${interest}. Ask if they want to arrange a call to discuss custom requirements.`,
-          action: ACTIONS.CREATE_LEAD,
-          payload: { interest }
-        };
+         decision.message = "Pricing starts at 1500 INR/month. Kaunsi service ka price janna chahenge aap?";
       }
+      break;
 
-    /* ---------------- PRICE / BUDGET ---------------- */
-    case "ask_price":
-    case "pricing_request":
-      const product = entities.product || entities.service;
-
-      // DB se price nikalo
-      const priceInfo = product
-        ? business.services?.find(s => s.name.toLowerCase().includes(product.toLowerCase()))
-        : null;
-
-      if (priceInfo) {
-        return {
-          message: `User asked price for ${priceInfo.name}. 
-                    Tell them the price is **${priceInfo.price}**. 
-                    Add a quick value line (e.g., "It's our best-selling plan"). 
-                    Ask if they want to proceed.`,
-          action: ACTIONS.NONE
-        };
-      }
-
-      return {
-        message: "Pricing depends on customization. Standard starting price is competitive. Shall I send the rate card?",
-        action: ACTIONS.NONE
-      };
-
-    /* ---------------- APPOINTMENT / VISIT ---------------- */
-    case "book_appointment":
+    // -----------------------------------------------------
+    // 📅 BOOK APPOINTMENT / SITE VISIT
+    // -----------------------------------------------------
     case "schedule_site_visit":
-      if (!entities.date && !entities.time) {
-        // Agar date/time nahi hai, toh AI ko bolo maangne ko
-        return {
-          message: "User wants to book, but Date/Time is missing. Ask for preferred Date and Time politely.",
-          action: ACTIONS.ASK_MISSING_INFO
-        };
+    case "book_appointment":
+      decision.action = ACTIONS.SEND_TEXT;
+      
+      if (entities.date && entities.time) {
+        decision.message = `Great! I have noted your request for ${entities.date} at ${entities.time}. Our team will confirm shortly.`;
+        // Future: Add functionality to actually save to DB
+      } else if (entities.date) {
+        decision.message = `Okay, ${entities.date} works. What time should we meet?`;
+      } else {
+        decision.message = "Sure! When would you like to schedule this? (Date and Time)";
       }
-      return {
-        message: `Confirm appointment for ${entities.service || "Meeting"} on ${entities.date} at ${entities.time}. Say 'Booked successfully! ✅'`,
-        action: ACTIONS.CREATE_APPOINTMENT,
-        payload: { service: entities.service || "Meeting", date: entities.date, time: entities.time }
-      };
+      break;
 
-    /* ---------------- REAL ESTATE SEARCH ---------------- */
-    case "search_property": {
-      const { budget, location, property_type } = entities;
-      if (!location) return { message: "Ask which Location they prefer?", action: ACTIONS.ASK_MISSING_INFO };
+    // -----------------------------------------------------
+    // 🏠 REAL ESTATE SPECIFIC
+    // -----------------------------------------------------
+    case "ask_budget":
+      decision.action = ACTIONS.SEND_TEXT;
+      decision.message = "Humare paas properties 50 Lakhs se lekar 5 Cr tak available hain. Aapka budget range kya hai?";
+      break;
 
-      return {
-        message: `User is looking for ${property_type || "property"} in ${location}. 
-                  Acknowledge their budget (${budget || "flexible"}). 
-                  Say "We have great options". Ask if they want to see Photos or Visit?`,
-        action: ACTIONS.CREATE_LEAD,
-        payload: { budget, location, property_type }
-      };
-    }
+    case "ask_location":
+      decision.action = ACTIONS.SEND_TEXT;
+      decision.message = "Hum abhi Mumbai, Pune aur Bangalore mein active hain. Aap kahan property dhoond rahe hain?";
+      break;
 
-    /* ---------------- GENERIC ACTIONS ---------------- */
-    case "request_callback":
-      return {
-        message: "Acknowledge callback request. Say the team will call shortly.",
-        action: ACTIONS.REQUEST_CALLBACK
-      };
-
-    case "report_issue":
-      return {
-        message: "Sympathize with the issue. Say a Ticket has been created.",
-        action: ACTIONS.CREATE_TICKET,
-        payload: { issue: entities.issue || "Reported Issue" }
-      };
-
-    case "check_ticket_status":
-      return { message: "Checking ticket status... Say it is In Progress.", action: ACTIONS.NONE };
-
+    // -----------------------------------------------------
+    // 📞 HUMAN HANDOFF
+    // -----------------------------------------------------
     case "request_human":
-      return { message: "Connect to human agent. Say 'Connecting you now...'", action: ACTIONS.ESCALATE_TO_HUMAN };
+      decision.action = ACTIONS.HUMAN_HANDOFF; // This should trigger status change in DB
+      decision.message = "Okay, main ek human agent ko connect kar raha hoon. Please wait...";
+      break;
 
-    /* ---------------- FALLBACK ---------------- */
+    // -----------------------------------------------------
+    // ❓ UNKNOWN / FALLBACK
+    // -----------------------------------------------------
     default:
-      return {
-        message: "I didn't understand. Ask them to clarify or choose from services.",
-        action: ACTIONS.ASK_CLARIFICATION
-      };
+      decision.action = ACTIONS.SEND_TEXT;
+      decision.useAI = true; // Use AI to handle small talk or unknown queries politely
+      decision.message = `[SYSTEM INSTRUCTION: User said: "${context.userMessage}". Reply politely saying you are a support bot and can help with Services, Pricing, or Appointments.]`;
+      break;
   }
+
+  return decision;
 }
