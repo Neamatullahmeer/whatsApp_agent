@@ -1,17 +1,14 @@
 import jwt from "jsonwebtoken";
 
-export function signToken(user) {
+export const signToken = (user) => {
+  // Ensure karein ki hum 'userId' aur 'id' dono bhej rahe hain taaki confusion na ho
   return jwt.sign(
-    {
-      userId: user._id,
+    { 
+      userId: user._id, 
       businessId: user.businessId,
-      role: user.role
+      role: user.role 
     },
     process.env.JWT_SECRET,
-    { expiresIn: "1d" }
+    { expiresIn: "30d" }
   );
-}
-
-export function verifyToken(token) {
-  return jwt.verify(token, process.env.JWT_SECRET);
-}
+};

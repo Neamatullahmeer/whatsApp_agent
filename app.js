@@ -23,6 +23,8 @@ import conversationRoutes from "./routes/conversation.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import auditRoutes from "./routes/audit.routes.js"; 
 import campaignRoutes from "./routes/campaign.routes.js";
+import leadRoutes from "./routes/lead.routes.js";
+import chatRoutes from "./routes/chat.routes.js"; //
 
 const app = express();
 
@@ -108,15 +110,17 @@ app.use(hpp());
 /* =========================================
    🚀 4. BUSINESS ROUTES
    ========================================= */
-app.use("/webhook", webhookRoutes);
-app.use("/business", businessRoute);
-app.use("/billing", billingRoutes);
-app.use("/admin", adminRoutes);
-app.use("/human", humanRoutes);
-app.use("/conversation", conversationRoutes);
-app.use("/auth", authRoutes);
-app.use("/audit", auditRoutes);
+app.use("/api/webhook", webhookRoutes);
+app.use("/api/business", businessRoute);
+app.use("/api/billing", billingRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/human", humanRoutes);
+app.use("/api/conversation", conversationRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/audit", auditRoutes);
 app.use("/api/campaigns", campaignRoutes);
+app.use("/api/leads", leadRoutes);
+app.use("/api/chat", chatRoutes);
 
 /* =========================================
    ❌ 5. GLOBAL ERROR HANDLER

@@ -2,7 +2,7 @@ import { Business } from "../../shared/models/Business.model.js";
 import { Conversation } from "../../shared/models/Conversation.model.js";
 import { Message } from "../../shared/models/Message.model.js";
 import { Usage } from "../../shared/models/Usage.model.js";
-import { Campaign } from "../../shared/models/Campaign.model.js"; 
+import { Campaign } from "../../shared/models/Campaign.model.js";
 
 // Services
 import { detectIntent } from "../../services/intent.service.js";
@@ -12,7 +12,7 @@ import { sendWhatsAppMessage } from "../../services/whatsapp.service.js";
 import { generateAIResponse } from "../../services/response.generator.js";
 import { resolveCategory } from "../../services/categoryResolver.service.js";
 import { isDuplicateMessage } from "../../services/messageDedup.service.js";
-import { logEvent } from "../../services/audit.service.js"; 
+import { logEvent } from "../../services/audit.service.js";
 
 import { ACTIONS } from "../../constants/actionTypes.js";
 
@@ -20,13 +20,14 @@ export async function handleIncomingMessage(job) {
   const {
     phoneNumberId,
     from,
+    profileName, // 👈 IMPORTED FROM QUEUE (Zaroori hai)
     msgBody,
     messageId,
-    campaignId // 👈 If broadcast job
+    campaignId 
   } = job.data;
 
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("👷 [WORKER STARTED] Processing Job:", job.id);
+  console.log(`👷 [WORKER STARTED] Job: ${job.id} | User: ${profileName} (${from})`);
 
   try {
     /* ─────────────────────────────
@@ -50,14 +51,12 @@ export async function handleIncomingMessage(job) {
     /* ─────────────────────────────
        2️⃣ ENSURE CONVERSATION & SAVE USER MESSAGE
     ───────────────────────────── */
-    // Find active conversation
     let conversation = await Conversation.findOne({
       businessId: business._id,
       userPhone: from,
-      status: { $in: ["active", "human"] } 
+      status: { $in: ["active", "human"] }
     });
 
-    // Create new if not exists
     if (!conversation) {
       conversation = await Conversation.create({
         businessId: business._id,
@@ -66,19 +65,18 @@ export async function handleIncomingMessage(job) {
         lastMessageAt: new Date()
       });
     } else {
-      // Update last activity
       conversation.lastMessageAt = new Date();
       await conversation.save();
     }
 
-    // Save incoming User Message (Skip if it's a broadcast trigger)
+    // Save User Message
     if (!campaignId) {
-        await Message.create({
-            conversationId: conversation._id,
-            from: "user",
-            text: msgBody,
-            messageId
-        });
+      await Message.create({
+        conversationId: conversation._id,
+        from: "user",
+        text: msgBody,
+        messageId
+      });
     }
 
     // 🛑 HUMAN TAKEOVER CHECK
@@ -88,15 +86,12 @@ export async function handleIncomingMessage(job) {
     }
 
     /* ─────────────────────────────
-       3️⃣ FETCH HISTORY (CONTEXT) - CRITICAL UPDATE
+       3️⃣ FETCH HISTORY (CONTEXT)
     ───────────────────────────── */
-    // Fetch last 10 messages for context
     const rawHistory = await Message.find({ conversationId: conversation._id })
       .sort({ createdAt: -1 })
       .limit(10);
 
-    // Format history for AI (Oldest first)
-    // Format: "User: Hello\nAgent: Hi there"
     const history = rawHistory
       .reverse()
       .map(msg => `${msg.from === "user" ? "User" : "Agent"}: ${msg.text}`)
@@ -106,34 +101,26 @@ export async function handleIncomingMessage(job) {
        4️⃣ INTENT DETECTION
     ───────────────────────────── */
     const category = resolveCategory(business);
-    
+
     const intentResult = await detectIntent({
-      context: { business, category }, // Pass business info
+      context: { business, category },
       userMessage: msgBody,
-      history: history // Pass history context
+      history: history
     });
 
     console.log(`📦 Intent Detected: ${intentResult.intent} (Conf: ${intentResult.confidence})`);
-    
-    // Log detected entities
-    if (intentResult.entities && Object.keys(intentResult.entities).length > 0) {
-        console.log("🧩 Entities:", intentResult.entities);
-    }
 
     /* ─────────────────────────────
        5️⃣ LOW CONFIDENCE HANDLING
     ───────────────────────────── */
-    // If confidence is low OR intent is not allowed for this business
     if (
       intentResult.confidence < 0.6 ||
       (category.enabledIntents && !category.enabledIntents.includes(intentResult.intent))
     ) {
       const fallbackMsg = business.agentConfig?.responses?.lowConfidence || "Maaf kijiye, main samajh nahi paya. 🤔 Kya aap thoda detail mein batayenge?";
-      
-      // Send fallback
+
       await sendWhatsAppMessage(from, { text: fallbackMsg }, phoneNumberId);
-      
-      // Save agent response
+
       await Message.create({
         conversationId: conversation._id,
         from: "agent",
@@ -146,24 +133,25 @@ export async function handleIncomingMessage(job) {
     /* ─────────────────────────────
        6️⃣ AGENT BRAIN DECISION 🧠
     ───────────────────────────── */
-    intentResult.originalMessage = msgBody;
     
-    // Pass history to Agent Service for smarter replies
+    // ✅ PASS CONTEXT TO AGENT (Including Profile Name)
     const decision = await decideNextStep(intentResult, {
+      businessId: business._id,
+      userPhone: from,
+      profileName: profileName, // 👈 PASSED HERE
       business,
       category,
       userMessage: msgBody,
-      history: history 
+      history: history
     });
 
     /* ─────────────────────────────
        7️⃣ ACTION DISPATCH
     ───────────────────────────── */
     let actionResult = null;
-    
+
     if (decision.action && decision.action !== ACTIONS.NONE) {
       console.log(`⚡ Dispatching Action: ${decision.action}`);
-      
       actionResult = await dispatchAction(decision, {
         businessId: business._id,
         userPhone: from,
@@ -175,56 +163,35 @@ export async function handleIncomingMessage(job) {
        8️⃣ RESPONSE GENERATION & SENDING
     ───────────────────────────── */
     let finalMessageText = decision.message;
-    
-    // If text is missing or contains instruction placeholder, generate via AI
+
+    // AI Response Generation (If needed)
     if (!finalMessageText || finalMessageText.includes("[SYSTEM INSTRUCTION") || decision.useAI) {
-       console.log("🤖 Generating AI Response...");
-       finalMessageText = await generateAIResponse(business, intentResult, { ...decision, actionResult }, history);
+      console.log("🤖 Generating AI Response...");
+      finalMessageText = await generateAIResponse(business, intentResult, { ...decision, actionResult }, history);
     }
 
     // 📤 Send via WhatsApp
     await sendWhatsAppMessage(
-      from, 
+      from,
       {
-        text: finalMessageText || "...", // Fallback text
-        media: decision.media 
-      }, 
+        text: finalMessageText || "...",
+        media: decision.media
+      },
       phoneNumberId
     );
 
     /* ─────────────────────────────
-       9️⃣ TRACKING & LOGGING
+       9️⃣ LOGGING & TRACKING
     ───────────────────────────── */
     
-    // 1. Save Agent Message to DB
+    // Save Agent Message
     await Message.create({
       conversationId: conversation._id,
       from: "agent",
       text: finalMessageText,
     });
 
-    // 2. Update Campaign Stats (If Broadcast)
-    if (campaignId) {
-        await Campaign.updateOne(
-            { _id: campaignId },
-            { $inc: { "stats.sent": 1 } }
-        );
-    }
-
-    // 3. Audit Log
-    await logEvent({
-      businessId: business._id,
-      conversationId: conversation._id,
-      actorType: "ai",
-      event: "ai_reply_sent",
-      action: decision.action || "response_sent", 
-      meta: {
-        intent: intentResult.intent,
-        hasMedia: !!decision.media
-      }
-    });
-
-    // 4. Usage Update
+    // Stats
     const month = new Date().toISOString().slice(0, 7);
     await Usage.updateOne(
       { businessId: business._id, month },
@@ -240,7 +207,6 @@ export async function handleIncomingMessage(job) {
   } catch (err) {
     console.error("❌ [FATAL ERROR] Job failed inside handler:", messageId);
     console.error(err);
-    // Don't throw error to stop worker from crashing, just log it
     return { status: "failed", error: err.message };
   }
 }

@@ -39,7 +39,7 @@ const userSchema = new mongoose.Schema(
     // Example: "Sales wala banda chahiye" -> department check hoga
     department: {
       type: String,
-      enum: ["sales", "support", "general", "tech"],
+      enum: ["sales", "support","admin", "general", "tech"],
       default: "general"
     },
 
